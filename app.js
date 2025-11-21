@@ -328,7 +328,7 @@ async function decryptCipherPayload(payload, password) {
     {
       name: 'AES-CTR',
       counter: ivBytes,
-      length: 64
+      length: 128
     },
     key,
     cipherBytes
