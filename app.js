@@ -290,25 +290,29 @@ function xorByteArrays(a, b) {
   return out;
 }
 
-async function deriveCipherStream(password, saltBytes, length) {
+async function deriveCipherKey(password, saltBytes, iterations = 200000) {
   if (!window.crypto || !window.crypto.subtle) {
     throw new Error('Web Crypto API is required for decryption.');
   }
-  const passwordBytes = textEncoder.encode(password);
-  const stream = new Uint8Array(length);
-  const seedInput = new Uint8Array(passwordBytes.length + saltBytes.length);
-  seedInput.set(passwordBytes);
-  seedInput.set(saltBytes, passwordBytes.length);
-  let stateBuffer = await crypto.subtle.digest('SHA-256', seedInput);
-  let produced = 0;
-  while (produced < length) {
-    stateBuffer = await crypto.subtle.digest('SHA-256', stateBuffer);
-    const stateBytes = new Uint8Array(stateBuffer);
-    const take = Math.min(stateBytes.length, length - produced);
-    stream.set(stateBytes.subarray(0, take), produced);
-    produced += take;
-  }
-  return stream;
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    textEncoder.encode(password),
+    'PBKDF2',
+    false,
+    ['deriveKey']
+  );
+  return crypto.subtle.deriveKey(
+    {
+      name: 'PBKDF2',
+      salt: saltBytes,
+      iterations,
+      hash: 'SHA-256'
+    },
+    keyMaterial,
+    { name: 'AES-CTR', length: 256 },
+    false,
+    ['decrypt']
+  );
 }
 
 async function decryptCipherPayload(payload, password) {
@@ -316,9 +320,20 @@ async function decryptCipherPayload(payload, password) {
     throw new Error('Payload is not encrypted.');
   }
   const saltBytes = base64ToBytes(payload.salt);
+  const ivBytes = base64ToBytes(payload.iv);
   const cipherBytes = base64ToBytes(payload.data);
-  const keystream = await deriveCipherStream(password, saltBytes, cipherBytes.length);
-  const plainBytes = xorByteArrays(cipherBytes, keystream);
+  const iterations = Number(payload.iterations) || 200000;
+  const key = await deriveCipherKey(password, saltBytes, iterations);
+  const plainBuffer = await crypto.subtle.decrypt(
+    {
+      name: 'AES-CTR',
+      counter: ivBytes,
+      length: 64
+    },
+    key,
+    cipherBytes
+  );
+  const plainBytes = new Uint8Array(plainBuffer);
   if (payload.checksum) {
     const computed = await sha256Hex(plainBytes);
     if (computed !== payload.checksum) {
